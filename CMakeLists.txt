@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(trajectory_planner C CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(raylib REQUIRED)
+add_executable(planner src/main.cpp external/raygui_impl.c)
+target_include_directories(planner PRIVATE external)
+target_link_libraries(planner raylib)
