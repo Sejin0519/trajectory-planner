@@ -1,5 +1,7 @@
 #include "trajectory.hpp"
 #include "util.hpp"
+#include <algorithm>
+#include <cmath>
 
 void Trajectory::initializePoints() {
     if(!controlPoints.empty()) return;
@@ -17,9 +19,10 @@ void Trajectory::addPoints(Vector2 mouse) {
         controlPoints.push_back({0, 25});
         controlHeading.push_back(0.0f);
     } else {
+        //add a control handle opposite to the previous one
         Vector2 lastPoint = controlPoints.back();
         Vector2 lastControlPoint = controlPoints[controlPoints.size() - 2];
-        controlPoints.push_back(lastPoint * 2 - lastControlPoint);
+        controlPoints.push_back(lastPoint * 2 - lastControlPoint); 
     }
     controlPoints.push_back({mouse.x, mouse.y - 25});
     controlPoints.push_back(mouse);
@@ -57,13 +60,13 @@ void Trajectory::rebuildPoints(float density, float maxVel) {
         carry = s - bezier.totalLength;
     }
     points.push_back({controlPoints.back(), controlHeading.back()});
-    constructVelocityProfile(maxVel, density);
+    constructVelocityProfile(maxVel, density); //update the velocity graph
 
 }
 
 void Trajectory::deleteSelected() {
     if(!isAnchorSelected()) return;
-    if(controlPoints.size() <= 4) {
+    if(controlPoints.size() <= 4) { //delete everything if there are only 2 anchors
         controlPoints.clear();
         controlHeading.clear();
         selected = -1;
@@ -82,7 +85,7 @@ void Trajectory::draw(float maxVel) const {
     for(int i = 0; i < points.size(); i++) {
         float ratio = velocityProfile[i].speed / maxVel;
         float hue = ratio * 120.0f; 
-        Color color = ColorFromHSV(hue, 0.6f, 0.7f);
+        Color color = ColorFromHSV(hue, 0.6f, 0.7f); //from green to red depending on speed
         DrawCircleV({points[i].position.x, points[i].position.y}, 2.5*0.25f, color);
     }
     // DrawSplineBezierCubic(controlPoints.data(), controlPoints.size(), 3*0.25f, BLUE);
@@ -154,50 +157,115 @@ void Trajectory::constructVelocityProfile(float maxVel, float density) {
     velocityProfile.push_back({totalLength, speedAt(totalLength, maxVel)});
 }
 
-
+namespace {
+    //Cubic Hermite interpolation on [0,len], matching value v0/slope m0 at x=0 and value v1/slope
+    //m1 at x=len.
+    float hermite(float v0, float m0, float v1, float m1, float len, float x) {
+        float u = x / len;
+        float u2 = u * u, u3 = u2 * u;
+        float b0 = 2.0f*u3 - 3.0f*u2 + 1.0f;
+        float b1 = -2.0f*u3 + 3.0f*u2;
+        float bm0 = u3 - 2.0f*u2 + u;
+        float bm1 = u3 - u2;
+        return v0*b0 + v1*b1 + (m0*len)*bm0 + (m1*len)*bm1;
+    }
+}
 
 float Trajectory::speedAt(float s, float maxVel) const {
     if (velNodes.empty()) return maxVel;
     if (s <= velNodes.front().x) return velNodes.front().speed;
     if (s >= velNodes.back().x)  return velNodes.back().speed;
-    for (int i = 0; i < (int)velNodes.size() - 1; i++) {
-        if (s <= velNodes[i + 1].x) {
-            float t = (s - velNodes[i].x) / (velNodes[i + 1].x - velNodes[i].x);
-            return Lerp(velNodes[i].speed, velNodes[i + 1].speed, t);
+
+    int n = (int)velNodes.size();
+    const float cornerRadius = 6.0f; //how far the rounding extends into each adjoining segment
+
+    for (int i = 0; i < n - 1; i++) {
+        if (s > velNodes[i + 1].x) continue;
+        float segStart = velNodes[i].x,     segEnd = velNodes[i + 1].x;
+        float v0 = velNodes[i].speed,       v1 = velNodes[i + 1].speed;
+        float slope = (v1 - v0) / (segEnd - segStart);
+
+        //round the corner at this segment's left node (i), if it's an interior node with a
+        //segment before it. Outside this small window, the line is untouched (pure linear).
+        if (i > 0) {
+            float prevSlope = (v0 - velNodes[i - 1].speed) / (segStart - velNodes[i - 1].x);
+            float R = std::min({cornerRadius, 0.4f * (segStart - velNodes[i - 1].x), 0.4f * (segEnd - segStart)});
+            if (R > 0.0f && s < segStart + R) {
+                float mid = 0.5f * (prevSlope + slope); //shared meeting slope with the other half
+                float endVal = v0 + slope * R; //where this rejoins the pure-linear line
+                return Clamp(hermite(v0, mid, endVal, slope, R, s - segStart), 0.0f, maxVel);
+            }
         }
+        //round the corner at this segment's right node (i+1), if it's interior with a segment after.
+        if (i + 1 < n - 1) {
+            float nextSlope = (velNodes[i + 2].speed - v1) / (velNodes[i + 2].x - segEnd);
+            float R = std::min({cornerRadius, 0.4f * (segEnd - segStart), 0.4f * (velNodes[i + 2].x - segEnd)});
+            if (R > 0.0f && s > segEnd - R) {
+                float mid = 0.5f * (slope + nextSlope);
+                float startVal = v1 - slope * R; //where the pure-linear line would be here
+                return Clamp(hermite(startVal, slope, v1, mid, R, s - (segEnd - R)), 0.0f, maxVel);
+            }
+        }
+        //plain linear interpolation for the rest of the segment
+        return Lerp(v0, v1, (s - segStart) / (segEnd - segStart));
     }
     return velNodes.back().speed;
 }
 
-void Trajectory::exportStates(std::ofstream& file, float maxVel) const {
+std::vector<ExportState> Trajectory::buildStates(float maxVel) const {
     size_t numStates = points.size();
-    if(numStates <= 1) return;
+    if(numStates <= 1) return {};
+    std::vector<ExportState> exportStates;
 
     std::vector<float> t(numStates); //time at each state
     t[0] = 0.0f;
-    for(size_t i = 1; i < numStates; i++) {
+    for(size_t i = 1; i < numStates; i++) { 
         float distance = Vector2Distance(points[i].position, points[i-1].position);
         float averageSpeed = (velocityProfile[i].speed + velocityProfile[i-1].speed) / 2.0f;
         float time = averageSpeed > 0.0f ? distance / averageSpeed : 0.0f;
         t[i] = t[i-1] + time;
     }
 
-    file << "t, x, y, theta, xdot, ydot, thetadot\n";
     for(size_t i = 0; i < numStates; i++) {
-        size_t IndexBehind = (i == 0) ? 0 : i - 1;
-        size_t IndexAhead = (i == numStates - 1) ? numStates - 1 : i + 1;
-        Vector2 displacement = Vector2Subtract(points[IndexAhead].position, points[IndexBehind].position);
+        size_t indexBehind = (i == 0) ? 0 : i - 1;
+        size_t indexAhead = (i == numStates - 1) ? numStates - 1 : i + 1;
+
+        Vector2 displacement = Vector2Subtract(points[indexAhead].position, points[indexBehind].position); //displacement = tangent vector
         Vector2 unitTangent = (Vector2Length(displacement) > 0.0f) ? Vector2Normalize(displacement) : Vector2{0.0f, 0.0f};
 
         float speed = velocityProfile[i].speed;
-        float xdot = unitTangent.x * speed;
-        float ydot = -unitTangent.y * speed; //invert y-axis for output
-        float theta = degToRad(-points[i].heading);
-        float dtheta = (float)(degToRad(wrapAngle(points[IndexAhead].heading - points[IndexBehind].heading)));
-        float dt = t[IndexAhead] - t[IndexBehind];
-        float thetadot = (dt > 0.0f) ? dtheta / dt : 0.0f;
-        file << t[i] << ", " << points[i].position.x << ", " << -points[i].position.y << ", " << theta << ", " << xdot << ", " << ydot << ", " << thetadot << "\n";
-        
+        ExportState currentState;
+        currentState.time = t[i];
+
+        currentState.x = points[i].position.x;
+        currentState.y = -points[i].position.y;
+
+        currentState.xDot = unitTangent.x * speed;
+        currentState.yDot = -unitTangent.y * speed; //invert y-axis for output
+
+        currentState.theta = degToRad(-points[i].heading);
+        float dtheta = (float)(degToRad(wrapAngle(points[indexAhead].heading - points[indexBehind].heading)));
+        float dt = t[indexAhead] - t[indexBehind];
+        currentState.thetaDot = (dt > 0.0f) ? -dtheta / dt : 0.0f;
+
+        exportStates.push_back(currentState);
     }
 
+    //accleration
+    for (size_t i = 0; i < numStates; i++) {
+        size_t indexBehind = (i == 0) ? 0 : i - 1;
+        size_t indexAhead = (i == numStates - 1) ? numStates - 1 : i + 1;
+        float dt = t[indexAhead] - t[indexBehind];
+        if (dt > 0.0f) {
+            exportStates[i].xDDot = (exportStates[indexAhead].xDot - exportStates[indexBehind].xDot) / dt;
+            exportStates[i].yDDot = (exportStates[indexAhead].yDot - exportStates[indexBehind].yDot) / dt;
+            exportStates[i].thetaDDot = (exportStates[indexAhead].thetaDot - exportStates[indexBehind].thetaDot) / dt;
+        } else {
+            exportStates[i].xDDot = 0.0f;
+            exportStates[i].yDDot = 0.0f;
+            exportStates[i].thetaDDot = 0.0f;
+        }
+    }
+
+    return exportStates;
 }

@@ -9,6 +9,7 @@
 
 
 int main() {
+    //Initialize window and ImGui
     SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(900, 600, "Trajectory Planner");
     SetTargetFPS(60);
@@ -25,7 +26,9 @@ int main() {
     Camera2D camera = {0};
     camera.zoom = 1.0f;
     SetGesturesEnabled(GESTURE_PINCH_IN | GESTURE_PINCH_OUT);    
-    const float aspectRatio = 16.0f / 10.0f;
+
+
+    const float aspectRatio = 16.0f / 10.0f; //matching my macbook size 
 
     Vector2 fieldSize = { GetScreenHeight() * 0.8f, GetScreenHeight() * 0.8f };
     Vector2 fieldPos = {(GetScreenWidth() - fieldSize.x)/2, GetScreenHeight() * 0.01f};
@@ -41,8 +44,8 @@ int main() {
 
 
     while (!WindowShouldClose()) {
-
-        if (IsWindowResized()) {
+        // Handle window resizing
+        if (IsWindowResized()) { 
             int w = GetScreenWidth();
             SetWindowSize(w, (int)(w / aspectRatio));
             UnloadRenderTexture(field);
@@ -58,10 +61,11 @@ int main() {
         float panelW = GetScreenWidth() - panelX;
 
 
+        //Field interactions
+
         if(IsKeyPressed(KEY_BACKSPACE) && !ImGui::IsAnyItemActive() && !document.isDragging()) {
             document.selected().deleteSelected();
         }
-
 
         Vector2 mousePos = GetMousePosition();
         Vector2 mouseFieldPos = mousePos - fieldPos;
@@ -97,6 +101,7 @@ int main() {
             document.endDrag();
         }
 
+        // Undo/Redo with Cmd+Z / Cmd+Shift+Z
         if(!ImGui::IsAnyItemActive() && (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_Z) && !IsMouseButtonDown(0)) {
             if(IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
                 document.redo();
@@ -108,7 +113,7 @@ int main() {
         document.saveState();
         document.rebuildAll();
 
-
+        // Render field to texture
         BeginTextureMode(field);
             ClearBackground(GRAY);
             BeginMode2D(camera);
@@ -117,12 +122,14 @@ int main() {
             EndMode2D();
         EndTextureMode();
 
+        //ImGui Panels
         BeginDrawing();
             ClearBackground(DARKGRAY);  
             DrawTextureRec(field.texture,
                 { 0, 0, (float)field.texture.width, -(float)field.texture.height },
                 fieldPos, WHITE); 
             rlImGuiBegin();
+                // Inspector panel
                 ImGui::SetNextWindowPos({panelX, 0});
                 ImGui::SetNextWindowSize({ panelW, (float)GetScreenHeight()});
                 ImGui::Begin("Inspector", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
@@ -144,7 +151,7 @@ int main() {
                     } else {
                         ImGui::TextDisabled("No point selected");
                     }
-                    static char exportPath[256] = "paths.txt"; //default export file name
+                    static char exportPath[256] = "paths.hpp"; //default export file name
                     static int  exportStatus = 0;   // 0 none, 1 ok, -1 fail
 
 
@@ -166,6 +173,7 @@ int main() {
                 ImGui::End();
 
 
+                // Paths panel
                 ImGui::SetNextWindowPos({0, 0});
                 ImGui::SetNextWindowSize({ panelW, (float)GetScreenHeight()});
                 ImGui::Begin("Paths", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
@@ -174,6 +182,7 @@ int main() {
                     if(ImGui::Button("+")) {
                         document.addPath();
                     }
+
                     static int editingIndex = -1;
                     static char nameBuffer[64];
 
@@ -181,17 +190,18 @@ int main() {
                         ImGui::PushID(i);
                         bool isActive = (i == document.activeIndex());
                         std::string label = document.at(i).getName();
-                        if(editingIndex == i) {
+
+                        if(editingIndex == i) { //editing mode
                             strcpy(nameBuffer, label.c_str());
                             if(ImGui::InputText("##edit", nameBuffer, sizeof(nameBuffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
                                 document.at(i).setName(std::string(nameBuffer));
                                 editingIndex = -1;
                             }
                         } else {
-                            if(ImGui::Selectable(label.c_str(), isActive)) {
+                            if(ImGui::Selectable(label.c_str(), isActive)) { //select path on click
                                 document.setActive(i);
                             }
-                            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) { //editing mode on double click
                                 editingIndex = i;
                                 strcpy(nameBuffer, label.c_str());
                             }
@@ -203,7 +213,7 @@ int main() {
                     ImGui::InputText("File", exportPath, sizeof(exportPath));
                     if (ImGui::Button("Export all…")) {
                         const char* filter[] = { "*.txt" };
-                        const char* dest = tinyfd_saveFileDialog("Export paths", "paths.txt", 1, filter, "Text files");
+                        const char* dest = tinyfd_saveFileDialog("Export paths", "paths.hpp", 1, filter, "header files");
                         if (dest != NULL) {
                             exportStatus = document.exportPaths(dest) ? 1 : -1;
                         }
@@ -211,7 +221,7 @@ int main() {
                 ImGui::End();
 
 
-
+                // Velocity profile panel
                 float totalLength = document.selected().getTotalLength();
                 float graphY = fieldPos.y + fieldSize.y + GetScreenHeight() * 0.005f;
                 ImGui::SetNextWindowPos({fieldPos.x, graphY});
@@ -248,10 +258,10 @@ int main() {
                         if(ImPlot::DragPoint(i, &dx, &dy, ImVec4(0.35f, 0.65f, 1.0f, 1.0f), 6, 0, nullptr, &hovered, &held)) {
                             float lowerBound = (i > 0) ? velNodes[i - 1].x : 0.0f;
                             float upperBound = (i < (int)velNodes.size() - 1) ? velNodes[i + 1].x : totalLength;
-                            p.x = Clamp((float)dx, lowerBound, upperBound);
+                            p.x = Clamp((float)dx, lowerBound, upperBound); //clamp node x position between neighbors
                             p.speed = Clamp((float)dy, 0.0f, document.getMaxSpeed());
                         }
-                        if(hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                        if(hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) { //delete node on right click
                             deleteIndex = i;
                         }
                         if(held) {
@@ -263,7 +273,7 @@ int main() {
                     }
 
 
-                    if(ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                    if(ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(0)) { //add new node on double click
                         ImPlotPoint point = ImPlot::GetPlotMousePos();
                         VelPoint newNode;
                         newNode.x = Clamp((float)point.x, 0.0f, totalLength);

@@ -25,6 +25,12 @@ struct PathState {
     std::vector<VelPoint>  velNodes;
 };
 
+struct ExportState {
+    double time;
+    double x, y, theta, xDot, yDot, thetaDot;
+    double xDDot, yDDot, thetaDDot;
+};
+
 class Trajectory {
     std::vector<Vector2> controlPoints;
     std::vector<float> controlHeading; //only at anchors - [3*k]
@@ -69,7 +75,7 @@ public:
     void  setSelectedPos(Vector2 position)  { controlPoints[selected] = position; }
     void  setSelectedHeading(float heading) { controlHeading[selected / 3] = heading; }
 
-    void exportStates(std::ofstream& file, float maxVel) const;
+    std::vector<ExportState> buildStates(float maxVel) const;
 
 
     void saveState(bool dragging);
